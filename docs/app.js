@@ -28,6 +28,17 @@ const REGION_PRESETS = [
 ];
 const DEFAULT_PRESET = REGION_PRESETS[0];
 
+// The regional map starts fitted to its region, so pinching out below 1 is what
+// lets you pull back far enough to see the neighbouring continents.
+const MIN_MAP_ZOOM = 0.2;
+
+// Globe motion, all in degrees per second.
+const IDLE_SPIN_DEGREES_PER_SECOND = 5;
+const MAX_FLICK_DEGREES_PER_SECOND = 240;
+// Time constant of the slowdown: after a flick the globe is back to a lazy
+// drift within a couple of seconds.
+const MOMENTUM_DECAY_SECONDS = 0.8;
+
 const travelStatusById = new Map(TRAVEL_LOG.map((entry) => [entry.id, entry.status]));
 
 // ---------- small helpers ----------
@@ -104,6 +115,43 @@ function watchSize(element, onResize) {
   new ResizeObserver(() => onResize(element.getBoundingClientRect())).observe(element);
 }
 
+// ---------- overseas territories ----------
+
+function isInsideBounds([longitude, latitude], [[west, south], [east, north]]) {
+  return longitude >= west && longitude <= east && latitude >= south && latitude <= north;
+}
+
+function polygonFeature(coordinates) {
+  return { type: "Feature", geometry: { type: "Polygon", coordinates } };
+}
+
+// Groups a country's polygons per territory, so France keeps only its European
+// parts and French Guiana becomes a country feature of its own.
+function splitOffTerritories(feature) {
+  const territories = OVERSEAS_TERRITORIES.filter((territory) => territory.parent === feature.id);
+  if (territories.length === 0 || feature.geometry.type !== "MultiPolygon") return [feature];
+
+  const polygonsByOwner = new Map();
+  for (const coordinates of feature.geometry.coordinates) {
+    const center = d3.geoCentroid(polygonFeature(coordinates));
+    const territory = territories.find((candidate) => isInsideBounds(center, candidate.bounds));
+    const owner = territory ?? feature;
+    if (!polygonsByOwner.has(owner)) polygonsByOwner.set(owner, []);
+    polygonsByOwner.get(owner).push(coordinates);
+  }
+
+  return [...polygonsByOwner].map(([owner, coordinates]) => ({
+    type: "Feature",
+    id: owner.id,
+    properties: { name: owner === feature ? feature.properties.name : owner.name },
+    geometry: { type: "MultiPolygon", coordinates },
+  }));
+}
+
+function withSeparateTerritories(features) {
+  return features.flatMap(splitOffTerritories);
+}
+
 // ---------- globe ----------
 
 function createGlobe(container, countries, { onCountryClick, onHover }) {
@@ -129,38 +177,88 @@ function createGlobe(container, countries, { onCountryClick, onHover }) {
     countryPaths.attr("d", pathGenerator);
   }
 
-  // A slow idle spin makes the globe feel alive until the visitor takes over
-  let idleSpin = null;
-  function startIdleSpin() {
-    if (prefersReducedMotion) return;
-    idleSpin = d3.timer((elapsed) => {
+  // The globe always drifts: after a flick it keeps the speed you gave it and
+  // slows down to the idle drift rather than to a standstill.
+  let longitudeSpeed = IDLE_SPIN_DEGREES_PER_SECOND; // degrees per second, sign is the direction
+  let latitudeSpeed = 0;
+  let spinTimer = null;
+  let lastFrameTime = 0;
+
+  function minimumSpeedInCurrentDirection() {
+    const direction = longitudeSpeed < 0 ? -1 : 1;
+    return IDLE_SPIN_DEGREES_PER_SECOND * direction;
+  }
+
+  function decayTowards(speed, target, elapsedSeconds) {
+    const remaining = Math.exp(-elapsedSeconds / MOMENTUM_DECAY_SECONDS);
+    return target + (speed - target) * remaining;
+  }
+
+  function startSpinning() {
+    if (prefersReducedMotion || spinTimer) return;
+    lastFrameTime = 0;
+    spinTimer = d3.timer((elapsed) => {
+      const elapsedSeconds = (elapsed - lastFrameTime) / 1000;
+      lastFrameTime = elapsed;
+
+      longitudeSpeed = decayTowards(longitudeSpeed, minimumSpeedInCurrentDirection(), elapsedSeconds);
+      latitudeSpeed = decayTowards(latitudeSpeed, 0, elapsedSeconds);
+
       const [longitude, latitude] = projection.rotate();
-      projection.rotate([longitude + 0.08, latitude]);
+      projection.rotate([
+        longitude + longitudeSpeed * elapsedSeconds,
+        clamp(latitude + latitudeSpeed * elapsedSeconds, -85, 85),
+      ]);
       render();
     });
   }
-  function stopIdleSpin() {
-    idleSpin?.stop();
-    idleSpin = null;
+
+  function stopSpinning() {
+    spinTimer?.stop();
+    spinTimer = null;
   }
 
   svg.call(
     d3.drag()
-      .on("start", stopIdleSpin)
+      .on("start", () => {
+        stopSpinning();
+        lastDragTime = 0; // so the first move of this drag is not read as a flick
+      })
       .on("drag", (event) => {
         const [longitude, latitude] = projection.rotate();
         // Scale drag speed by globe size so a small globe doesn't spin wildly
         const degreesPerPixel = 75 / projection.scale();
-        projection.rotate([
-          longitude + event.dx * degreesPerPixel,
-          clamp(latitude - event.dy * degreesPerPixel, -85, 85),
-        ]);
+        const longitudeChange = event.dx * degreesPerPixel;
+        const latitudeChange = -event.dy * degreesPerPixel;
+
+        projection.rotate([longitude + longitudeChange, clamp(latitude + latitudeChange, -85, 85)]);
         render();
+        rememberFlickSpeed(longitudeChange, latitudeChange);
       })
+      .on("end", startSpinning)
   );
 
+  // The drag event has no velocity of its own, so measure how fast the pointer
+  // moved between the last two drag events and cap it to keep the flick sane.
+  let lastDragTime = 0;
+  function rememberFlickSpeed(longitudeChange, latitudeChange) {
+    const now = performance.now();
+    const elapsedSeconds = (now - lastDragTime) / 1000;
+    lastDragTime = now;
+    // On the first move of a drag, or after the pointer paused mid drag, there is
+    // no flick to carry over: let go and the globe just resumes its idle drift.
+    if (elapsedSeconds <= 0 || elapsedSeconds > 0.1) {
+      longitudeSpeed = minimumSpeedInCurrentDirection();
+      latitudeSpeed = 0;
+      return;
+    }
+
+    longitudeSpeed = clamp(longitudeChange / elapsedSeconds, -MAX_FLICK_DEGREES_PER_SECOND, MAX_FLICK_DEGREES_PER_SECOND);
+    latitudeSpeed = clamp(latitudeChange / elapsedSeconds, -MAX_FLICK_DEGREES_PER_SECOND, MAX_FLICK_DEGREES_PER_SECOND);
+  }
+
   function rotateTo([longitude, latitude]) {
-    stopIdleSpin();
+    stopSpinning();
     const [currentLongitude, currentLatitude] = projection.rotate();
     const targetLongitude = shortestLongitudeTarget(currentLongitude, -longitude);
     const interpolateRotation = d3.interpolate(
@@ -173,7 +271,8 @@ function createGlobe(container, countries, { onCountryClick, onHover }) {
       .tween("rotate", () => (t) => {
         projection.rotate(interpolateRotation(t));
         render();
-      });
+      })
+      .on("end", startSpinning);
   }
 
   function markSelected(countryId) {
@@ -187,7 +286,7 @@ function createGlobe(container, countries, { onCountryClick, onHover }) {
     render();
   });
 
-  startIdleSpin();
+  startSpinning();
   return { rotateTo, markSelected };
 }
 
@@ -209,7 +308,7 @@ function createRegionMap(container, countries, { onHover, onCountryClick }) {
     .on("click", (event, feature) => onCountryClick(feature));
 
   const zoom = d3.zoom()
-    .scaleExtent([1, 16])
+    .scaleExtent([MIN_MAP_ZOOM, 16])
     .on("zoom", (event) => zoomLayer.attr("transform", event.transform));
   svg.call(zoom);
 
@@ -298,8 +397,8 @@ async function loadCountryShapes() {
     d3.json("data/countries-50m.json"),
   ]);
   return {
-    globeCountries: topojson.feature(coarseWorld, coarseWorld.objects.countries).features,
-    mapCountries: topojson.feature(detailedWorld, detailedWorld.objects.countries).features,
+    globeCountries: withSeparateTerritories(topojson.feature(coarseWorld, coarseWorld.objects.countries).features),
+    mapCountries: withSeparateTerritories(topojson.feature(detailedWorld, detailedWorld.objects.countries).features),
   };
 }
 
