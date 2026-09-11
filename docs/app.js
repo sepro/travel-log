@@ -257,6 +257,8 @@ function createGlobe(container, countries, { onCountryClick, onHover }) {
     latitudeSpeed = clamp(latitudeChange / elapsedSeconds, -MAX_FLICK_DEGREES_PER_SECOND, MAX_FLICK_DEGREES_PER_SECOND);
   }
 
+  // Picking a country or region parks the globe on it: the drift only comes back
+  // once the visitor spins it themselves.
   function rotateTo([longitude, latitude]) {
     stopSpinning();
     const [currentLongitude, currentLatitude] = projection.rotate();
@@ -271,8 +273,7 @@ function createGlobe(container, countries, { onCountryClick, onHover }) {
       .tween("rotate", () => (t) => {
         projection.rotate(interpolateRotation(t));
         render();
-      })
-      .on("end", startSpinning);
+      });
   }
 
   function markSelected(countryId) {
