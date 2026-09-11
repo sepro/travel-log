@@ -1,0 +1,250 @@
+:root {
+  --black: #000000;
+  --phosphor: #e4e4e0;
+  --phosphor-mid: #9a9a96;
+  --phosphor-dim: #5a5a57;
+  --land-unvisited: #1c1c1b;
+  --border-unvisited: #3c3c3a;
+  --glow: 0 0 2px rgba(228, 228, 224, 0.8), 0 0 8px rgba(228, 228, 224, 0.35);
+
+  --font: "VT323", "Courier New", monospace;
+  --text-size: 1.3rem;
+  --heading-size: 1.45rem;
+  --gap: 14px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--black);
+  color: var(--phosphor);
+  font-family: var(--font);
+  font-size: var(--text-size);
+  line-height: 1.2;
+}
+
+body { padding: 12px; }
+
+/* The "tube": rounded glass, dark vignette at the edges and scanlines on top.
+   Real barrel distortion isn't possible in CSS, the vignette and inner glow sell the curvature. */
+.screen {
+  position: relative;
+  min-height: calc(100vh - 24px);
+  padding: 18px 22px;
+  border-radius: 28px / 22px;
+  background: radial-gradient(ellipse at center, #0d0d0d 0%, #050505 70%, #000 100%);
+  box-shadow:
+    inset 0 0 60px rgba(0, 0, 0, 0.9),
+    inset 0 0 14px rgba(228, 228, 224, 0.08),
+    0 0 0 2px #1a1a1a;
+  overflow: hidden;
+  text-shadow: var(--glow);
+}
+
+.screen::before,
+.screen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  z-index: 10;
+}
+
+.screen::before {
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0px,
+    rgba(0, 0, 0, 0) 2px,
+    rgba(0, 0, 0, 0.28) 3px
+  );
+}
+
+.screen::after {
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.55) 100%);
+}
+
+/* Title bar */
+.titlebar {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 16px;
+  border-bottom: 1px solid var(--phosphor-dim);
+  padding-bottom: 6px;
+  margin-bottom: var(--gap);
+}
+
+h1 {
+  margin: 0;
+  font-size: 2.4rem;
+  font-weight: normal;
+  letter-spacing: 0.04em;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: var(--heading-size);
+  font-weight: normal;
+}
+
+.prompt { color: var(--phosphor-mid); }
+.dim { color: var(--phosphor-mid); }
+
+/* Layout: globe and region map share the top, three small stat panels below */
+.layout {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-rows: minmax(380px, 62vh) auto;
+}
+
+.panel-globe  { grid-column: span 2; }
+.panel-region { grid-column: span 4; }
+.layout > .panel:nth-child(n + 3) { grid-column: span 2; }
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--phosphor-dim);
+}
+
+.hint {
+  margin: 6px 0 0;
+  font-size: 1.05rem;
+}
+
+.viz {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.viz > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* One glow filter on the whole SVG is far cheaper than one per country path */
+  filter: drop-shadow(0 0 1.5px rgba(228, 228, 224, 0.55));
+  touch-action: none;
+}
+
+/* Region presets */
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-bottom: 8px;
+}
+
+.presets button {
+  font: inherit;
+  font-size: 1.15rem;
+  color: var(--phosphor);
+  background: none;
+  border: none;
+  padding: 0 4px;
+  cursor: pointer;
+  text-shadow: inherit;
+}
+
+.presets button::before { content: "["; color: var(--phosphor-dim); }
+.presets button::after  { content: "]"; color: var(--phosphor-dim); }
+
+.presets button:hover,
+.presets button[aria-pressed="true"] {
+  background: var(--phosphor);
+  color: var(--black);
+  text-shadow: none;
+}
+
+.presets button:focus-visible {
+  outline: 1px dashed var(--phosphor);
+  outline-offset: 2px;
+}
+
+/* Map shapes. Monochrome means the status is carried by texture, not colour. */
+.sphere { fill: var(--black); stroke: var(--phosphor-mid); stroke-width: 1; }
+.graticule { fill: none; stroke: var(--phosphor-dim); stroke-width: 0.4; stroke-opacity: 0.6; }
+
+.country {
+  fill: var(--land-unvisited);
+  stroke: var(--border-unvisited);
+  stroke-width: 0.5;
+  vector-effect: non-scaling-stroke;
+  cursor: pointer;
+}
+
+.country.lived   { fill: var(--phosphor); stroke: var(--black); }
+.country.visited { fill: url(#scanline-hatch); stroke: var(--phosphor-mid); }
+.country.transit { fill: url(#sparse-dots); stroke: var(--phosphor); stroke-width: 1; stroke-dasharray: 2 2; }
+
+.country:hover    { stroke: var(--phosphor); stroke-width: 1.5; }
+.country.selected { stroke: var(--phosphor); stroke-width: 2; stroke-dasharray: none; }
+
+.hatch-line { fill: var(--phosphor); }
+.dot { fill: var(--phosphor); }
+.dot-background { fill: var(--land-unvisited); }
+
+.pattern-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
+/* Stats and legend */
+.readout-block {
+  margin: 0;
+  font: inherit;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.legend li { display: flex; align-items: center; gap: 10px; }
+.legend svg { width: 36px; height: 24px; }
+
+/* Status line */
+.statusline {
+  margin-top: var(--gap);
+  padding-top: 6px;
+  border-top: 1px solid var(--phosphor-dim);
+  min-height: 1.6em;
+}
+
+.cursor { animation: blink 1s steps(1) infinite; margin-left: 2px; }
+
+@keyframes blink { 50% { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor { animation: none; }
+}
+
+/* Narrow screens: stack everything */
+@media (max-width: 860px) {
+  body { padding: 6px; }
+  .screen { padding: 12px 12px; border-radius: 16px; }
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+  }
+  .panel-globe,
+  .panel-region,
+  .layout > .panel:nth-child(n + 3) { grid-column: auto; }
+  .panel-globe .viz  { height: 88vw; flex: none; }
+  .panel-region .viz { height: 75vw; flex: none; }
+  h1 { font-size: 2rem; }
+  .readout-block { font-size: 1.15rem; }
+}
